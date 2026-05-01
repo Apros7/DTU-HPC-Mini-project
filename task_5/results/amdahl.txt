@@ -1,0 +1,15 @@
+Amdahl's-law analysis of parallel simulator
+===========================================
+Floorplans timed per run (N): 100
+Repeats per worker count:     1
+
+Per-worker results (compute_time):
+  P= 1: t= 602.86s  speedup= 1.00  efficiency= 1.00
+  P= 2: t= 305.15s  speedup= 1.98  efficiency= 0.99
+
+Estimated parallel fraction f  = 0.9877  (98.77% of work is parallelisable)
+Theoretical max speed-up S_inf = 1/(1-f) = 81.15x
+Best measured speed-up         = 1.98x with P=2 workers
+Fraction of S_inf achieved     = 2.4%
+
+Estimated time for all 4571 floorplans with P=2: 13948.3 s (232.5 min)

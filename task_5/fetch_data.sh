@@ -15,6 +15,9 @@
 #
 # Configuration via env vars:
 #   N        number of floorplans to download (default 100)
+#   START    1-based index to start from in building_ids.txt (default 1).
+#            Use START=1001 N=500 to fetch buildings 1001..1500 - useful
+#            for resuming a partial download.
 #   DEST     local destination dir
 #            (default: /Users/lucasvilsen/Documents/DTU/mini_project_hpc/data)
 #   HPC_HOST ssh host alias (default: HPC)
@@ -24,13 +27,15 @@
 set -euo pipefail
 
 N=${N:-1000}
+START=${START:-1}
 DEST=${DEST:-/Users/lucasvilsen/Documents/DTU/mini_project_hpc/data}
 HPC_HOST=${HPC_HOST:-HPC}
 REMOTE=${REMOTE:-/dtu/projects/02613_2025/data/modified_swiss_dwellings/}
 
 mkdir -p "$DEST"
 
-echo "Fetching $N floorplans"
+END=$((START + N - 1))
+echo "Fetching floorplans ${START}..${END} (${N} total)"
 echo "  from : ${HPC_HOST}:${REMOTE}"
 echo "  to   : $DEST"
 
@@ -40,13 +45,13 @@ rsync -avh --progress \
     "$DEST/"
 
 # 2. Build the file list of {bid}_domain.npy + {bid}_interior.npy
-#    for the first N building IDs.
+#    for building IDs in the slice [START, START+N-1] (1-based, inclusive).
 TMP_LIST=$(mktemp)
 trap 'rm -f "$TMP_LIST"' EXIT
-head -n "$N" "$DEST/building_ids.txt" | awk '{
+awk -v s="$START" -v e="$END" 'NR>=s && NR<=e {
     print $1"_domain.npy"
     print $1"_interior.npy"
-}' > "$TMP_LIST"
+}' "$DEST/building_ids.txt" > "$TMP_LIST"
 
 # 3. Pull only those files.
 rsync -avh --progress --files-from="$TMP_LIST" \
