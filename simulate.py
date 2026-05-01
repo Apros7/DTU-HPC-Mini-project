@@ -27,6 +27,33 @@ def jacobi(u, interior_mask, max_iter, atol=1e-6):
     return u
 
 
+from numba import njit
+import numpy as np
+
+@njit
+def jacobi_jit(u, interior_mask, max_iter, atol=1e-6):
+    u = np.copy(u)
+    n,m = u.shape
+
+    for it in range(max_iter):
+        delta = 0.0
+        u_new = np.copy(u)
+        
+        for i in range(1, n-1):
+            for j in range(1, m-1):
+                if interior_mask[i-1,j-1]:
+                    new_val = 0.25 * (u[i, j-1] + u[i, j+1] + u[i-1,j] + u[i+1,j])
+                    diff = abs(u[i,j] - new_val)
+                    
+                    if diff > delta:
+                        delta = diff
+                    
+                    u_new[i, j] = new_val
+        u = u_new
+        if delta < atol: break
+    return u
+
+
 def summary_stats(u, interior_mask):
     u_interior = u[1:-1, 1:-1][interior_mask]
     mean_temp = u_interior.mean()
@@ -40,6 +67,18 @@ def summary_stats(u, interior_mask):
         'pct_below_15': pct_below_15,
     }
 
+import time
+from contextlib import contextmanager
+
+@contextmanager
+def timer(name: str = "block"):
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        end = time.perf_counter()
+        print(f"{name} took {end - start:.4f} seconds")
+
 
 if __name__ == '__main__':
     # Load data
@@ -47,10 +86,12 @@ if __name__ == '__main__':
     with open(join(LOAD_DIR, 'building_ids.txt'), 'r') as f:
         building_ids = f.read().splitlines()
 
+    function_type = ""
     if len(sys.argv) < 2:
         N = 1
     else:
-        N = int(sys.argv[1])
+        function_type = str(sys.argv[1])
+        N = int(sys.argv[2])
     building_ids = building_ids[:N]
 
     # Load floor plans
@@ -67,8 +108,12 @@ if __name__ == '__main__':
 
     all_u = np.empty_like(all_u0)
     for i, (u0, interior_mask) in enumerate(zip(all_u0, all_interior_mask)):
-        u = jacobi(u0, interior_mask, MAX_ITER, ABS_TOL)
-        all_u[i] = u
+        with timer(function_type):
+            if function_type == "jit":
+                u = jacobi_jit(u0, interior_mask, MAX_ITER, ABS_TOL)
+            else:
+                u = jacobi(u0, interior_mask, MAX_ITER, ABS_TOL)
+            all_u[i] = u
 
     # Print summary statistics in CSV format
     stat_keys = ['mean_temp', 'std_temp', 'pct_above_18', 'pct_below_15']
