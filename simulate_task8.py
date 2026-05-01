@@ -1,131 +1,93 @@
 from os.path import join
-from multiprocessing.pool import Pool
+import math
 import sys
 
 import numpy as np
-import matplotlib.pyplot # For saving the plots (task 3)
+from numba import cuda
 
-from numba import njit, cuda
 
-# ------------------ DEFINING FUNCTIONS -----------------------
-
-# Files reader and processor: creation of the IC (u0) and the binary mask
 def load_data(load_dir, bid):
     SIZE = 512
     u = np.zeros((SIZE + 2, SIZE + 2))
-    u[1:-1, 1:-1] = np.load(join(load_dir, f"{bid}_domain.npy"))        # BC for a certain building ID bid is searched in the HPC directory:
-    interior_mask = np.load(join(load_dir, f"{bid}_interior.npy"))      # binary mask for a certain building ID bid is searched in the HPC directory:
+    u[1:-1, 1:-1] = np.load(join(load_dir, f"{bid}_domain.npy"))
+    interior_mask = np.load(join(load_dir, f"{bid}_interior.npy"))
     return u, interior_mask
 
-# Jacobi algorithm: for interior_mask nodes with a 1, updates the data in u till a certain tolerance atol is achieved
-def jacobi(u, interior_mask, max_iter, atol=1e-6):
-   u = np.copy(u)
-   for i in range(max_iter):                                                    # Till the maximum number of iterations is achieved
-       # Compute average of left, right, up and down neighbors, see eq. (1)
-       u_new = 0.25 * (u[1:-1, :-2] + u[1:-1, 2:] + u[:-2, 1:-1] + u[2:, 1:-1])  # Update calculation for all grid points
-       u_new_interior = u_new[interior_mask]                                     # Saves only the points belonging to the interior grid points (where interior_mask take values 1)
-       delta = np.abs(u[1:-1, 1:-1][interior_mask] - u_new_interior).max()       # Max-norm update in interior points calculation
-       u[1:-1, 1:-1][interior_mask] = u_new_interior                             # Update values of u in the interior grid point (although u contains values for all grid points)
-
-       if delta < atol:                                                          # Or till a certain tolerance is achieved
-           break
-   return u
-
-@njit
-def jacobi_jit(u, interior_mask, max_iter, atol=1e-6):
-    u = np.copy(u)
-    n,m = u.shape
-
-    for it in range(max_iter):
-        delta = 0.0
-        u_new = np.copy(u)
-        
-        for i in range(1, n-1):
-            for j in range(1, m-1):
-                if interior_mask[i-1,j-1]:
-                    new_val = 0.25 * (u[i, j-1] + u[i, j+1] + u[i-1,j] + u[i+1,j])
-                    diff = abs(u[i,j] - new_val)
-                    
-                    if diff > delta:
-                        delta = diff
-                    
-                    u_new[i, j] = new_val
-        u = u_new
-        if delta < atol: break
-    return u
 
 @cuda.jit
-def jacobi_kernel(u, interior_mask, max_iter, atol=1e-6):
-    i,j = cuda.grid(2)
-    
-    if i < interior_mask.shape[0] and j < interior_mask.shape[1]:
-        if interior_mask[i,j]:
-            u_new[i+1,j+1] = 0.25 * (u[i+1, j] + u[i+1, j+2] + u[i,j+1] + u[i+2,j+1])
-        else:
-            u_new[i+1,j+1] = u[i+1,j+1]
+def jacobi_step(u, u_new, mask):
+    """One Jacobi sweep: write u_new from u.
 
-def jacobi_cuda(u, interior_mask, max_iter, atol=1e-6):
+    The mask is shape (H, W); u/u_new are shape (H+2, W+2) with a one-cell
+    halo. Threads index the interior coordinate system (i, j) -> u[i+1, j+1].
+    Non-interior cells are copied through so the buffer swap is safe.
+    """
+    i, j = cuda.grid(2)
+    h, w = mask.shape
+    if i < h and j < w:
+        if mask[i, j]:
+            u_new[i + 1, j + 1] = 0.25 * (
+                u[i + 1, j] + u[i + 1, j + 2]
+                + u[i, j + 1] + u[i + 2, j + 1]
+            )
+        else:
+            u_new[i + 1, j + 1] = u[i + 1, j + 1]
+
+
+def jacobi_cuda(u, interior_mask, max_iter, atol=1e-6, check_every=200):
+    """Run Jacobi iterations on the GPU with periodic convergence checks."""
     d_u = cuda.to_device(u)
     d_u_new = cuda.to_device(u.copy())
     d_mask = cuda.to_device(interior_mask)
-    
-    threads_per_block = (16, 16)
 
-    blocks_per_grid = (
-        math.ceil(interior_mask.shape[0] / threads_per_block[0]),
-        math.ceil(interior_mask.shape[1] / threads_per_block[1]),
+    tpb = (16, 16)
+    bpg = (
+        math.ceil(interior_mask.shape[0] / tpb[0]),
+        math.ceil(interior_mask.shape[1] / tpb[1]),
     )
 
-    for _ in range(max_iter):
-        jacobi_kernel[blocks_per_grid, threads_per_block](d_u, d_u_new, d_mask)
+    for it in range(max_iter):
+        jacobi_step[bpg, tpb](d_u, d_u_new, d_mask)
         d_u, d_u_new = d_u_new, d_u
+        if (it + 1) % check_every == 0:
+            # Pull both buffers and check max diff. ~2 MB transfer per check.
+            delta = float(np.abs(d_u.copy_to_host()
+                                 - d_u_new.copy_to_host()).max())
+            if delta < atol:
+                break
 
     return d_u.copy_to_host()
 
-# STATS indicators: mean, standard deviation, under 18, under 15
+
 def summary_stats(u, interior_mask):
-    u_interior = u[1:-1, 1:-1][interior_mask]
-    mean_temp = u_interior.mean()
-    std_temp = u_interior.std()
-    pct_above_18 = np.sum(u_interior > 18) / u_interior.size * 100
-    pct_below_15 = np.sum(u_interior < 15) / u_interior.size * 100
+    u_int = u[1:-1, 1:-1][interior_mask]
     return {
-        'mean_temp': mean_temp,
-        'std_temp': std_temp,
-        'pct_above_18': pct_above_18,
-        'pct_below_15': pct_below_15,
+        'mean_temp':    u_int.mean(),
+        'std_temp':     u_int.std(),
+        'pct_above_18': (u_int > 18).sum() / u_int.size * 100,
+        'pct_below_15': (u_int < 15).sum() / u_int.size * 100,
     }
 
-# Function for parallelizing the code
-    # Left-hand side indexes elimination: not need of 3-order tensors use due to different memory in each process
-def f_for_multiprocessing(bid): # FUNCTION FOR COMPUTING U IN EACH FLOORPLAN IN A DIFFERENT THREAD
-    u0, interior_mask = load_data(LOAD_DIR, bid)                           # For each floor: Matrix containing IC and Matrix containing the binary mask
-    u = jacobi_cuda(u0, interior_mask, MAX_ITER, ABS_TOL)                       # JACOBI ITERATOR LOOPS TILL THE SOLUTION CONVERGES
-    stat_keys = ['mean_temp', 'std_temp', 'pct_above_18', 'pct_below_15']
-    print('building_id, ' + ', '.join(stat_keys))  # CSV header
-    stats = summary_stats(u, interior_mask)                                # Analyisis function: mean, standard deviation, below 18, below 15
-    print(f"{bid},", ", ".join(str(stats[k]) for k in stat_keys))          # In that order, print the result for each building
-
-
-# -------------------- CODE -------------------------------
 
 if __name__ == '__main__':
-    LOAD_DIR = "/dtu/projects/02613_2025/data/modified_swiss_dwellings/"   # Load data from the course directory in the HPC
+    LOAD_DIR = "/home/easysort/DTU-HPC-Mini-project/data/"
     with open(join(LOAD_DIR, 'building_ids.txt'), 'r') as f:
         building_ids = f.read().splitlines()
 
-    if len(sys.argv) < 2:
-        N = 1
-    else:                                                           # If the number of buildings is provided as the first argument in the batch job
-        N = int(sys.argv[1])
-    building_ids = building_ids[:N]                                 # Then calcule the T distribution only the first N buildings
+    N = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+    building_ids = building_ids[:N]
+    # Second arg accepted for CLI compatibility with run_all_tasks.py but
+    # ignored: one host process drives the GPU.
+    if len(sys.argv) > 2:
+        _ = int(sys.argv[2])
 
-    # Run jacobi iterations for each floor plan
     MAX_ITER = 20_000
     ABS_TOL = 1e-4
+    STAT_KEYS = ['mean_temp', 'std_temp', 'pct_above_18', 'pct_below_15']
 
-    # ----------------------------- HERE START THE CHANGES FOR MULTIPROCESSING ---------------------------
-
-with Pool(int(sys.argv[2])) as pool:
-    for _ in pool.imap(f_for_multiprocessing, building_ids):
-        pass
+    print('building_id, ' + ', '.join(STAT_KEYS))
+    for bid in building_ids:
+        u0, mask = load_data(LOAD_DIR, bid)
+        u = jacobi_cuda(u0, mask, MAX_ITER, ABS_TOL)
+        stats = summary_stats(u, mask)
+        print(f"{bid}, " + ", ".join(str(stats[k]) for k in STAT_KEYS))

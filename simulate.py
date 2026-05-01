@@ -82,7 +82,7 @@ def timer(name: str = "block"):
 
 if __name__ == '__main__':
     # Load data
-    LOAD_DIR = '/dtu/projects/02613_2025/data/modified_swiss_dwellings/'
+    LOAD_DIR = '/home/easysort/DTU-HPC-Mini-project/data/'
     with open(join(LOAD_DIR, 'building_ids.txt'), 'r') as f:
         building_ids = f.read().splitlines()
 

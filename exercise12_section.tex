@@ -1,0 +1,50 @@
+% Snippet for Exercise 12. Requires in preamble:
+% \usepackage{graphicx}
+% \usepackage{booktabs}
+% Adjust the figure path if your main .tex file lives elsewhere.
+
+\section{Exercise 12}
+
+By using the optimized custom CUDA kernel implementation from exercise~11, all the 4571 floorplans could be processed in 7.569~s.
+One problem however was the limited memory on the GPU\@.
+For this reason, we decided to run the script in batches of size 500 on the floor plans, which increases the idle time of the GPU, but makes this custom CUDA kernel approach possible and still performs significantly faster than the alternatives from other exercises.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.95\linewidth]{results/task11-8_mean_temp_histograms}
+  \caption{Distribution of the per-building mean temperature over all 4571 floorplans.
+  Left: 40 bins; right: 80 bins.
+  The dashed vertical line marks the average mean temperature across buildings (see Table~\ref{tab:ex12-stats}).}
+  \label{fig:ex12-mean-temp-hist}
+\end{figure}
+
+After processing all floorplans, we summarized the CSV output \texttt{results/task11-8\_stats.csv} (columns \texttt{mean\_temp}, \texttt{std\_temp}, \texttt{pct\_above\_18}, \texttt{pct\_below\_15}).
+
+\paragraph{Distribution of the mean temperatures.}
+Figure~\ref{fig:ex12-mean-temp-hist} shows histograms of the per-building mean interior temperature.
+The distribution spans roughly $8$--$19\,^{\circ}\mathrm{C}$ and is concentrated near the population mean of $14.7\,^{\circ}\mathrm{C}$ (dashed line); a smaller secondary lobe of warmer buildings sits between $17$ and $19\,^{\circ}\mathrm{C}$, and a colder tail extends down toward the boundary value of the unheated rooms.
+
+\paragraph{Summary statistics.}
+Table~\ref{tab:ex12-stats} answers the remaining questions.
+The averages are taken over all 4571 buildings; the two counts use the percentage columns with a $50\%$ threshold (at least half of the interior area).
+
+\begin{table}[htbp]
+  \centering
+  \caption{Aggregated statistics from \texttt{task11-8\_stats.csv}.}
+  \label{tab:ex12-stats}
+  \begin{tabular}{lr}
+    \toprule
+    Quantity & Value \\
+    \midrule
+    Number of buildings & $4571$ \\
+    Average mean temperature (per building) & $14.713\,^{\circ}\mathrm{C}$ \\
+    Average of per-building temperature standard deviation & $6.798\,^{\circ}\mathrm{C}$ \\
+    Buildings with $\geq 50\%$ of area above $18\,^{\circ}\mathrm{C}$ & $813$ \\
+    Buildings with $\geq 50\%$ of area below $15\,^{\circ}\mathrm{C}$ & $2462$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\noindent
+The threshold counts follow directly from \texttt{pct\_above\_18} $\geq 50$ and \texttt{pct\_below\_15} $\geq 50$.
+About $18\,\%$ of the buildings ($813$ of $4571$) are predominantly warm (at least half of their interior area above $18\,^{\circ}\mathrm{C}$), while roughly $54\,\%$ ($2462$ of $4571$) are predominantly cold (at least half of their interior area below $15\,^{\circ}\mathrm{C}$); the remainder fall in between, with intermediate temperature distributions.

@@ -5,10 +5,10 @@ import sys
 import multiprocessing as mp
 mp.set_start_method("fork")
 
-
 import numpy as np
 import matplotlib.pyplot # For saving the plots (task 3)
 
+from numba import njit
 
 # ------------------ DEFINING FUNCTIONS -----------------------
 
@@ -34,6 +34,28 @@ def jacobi(u, interior_mask, max_iter, atol=1e-6):
            break
    return u
 
+@njit
+def jacobi_jit(u, interior_mask, max_iter, atol=1e-6):
+    u = np.copy(u)
+    n,m = u.shape
+
+    for it in range(max_iter):
+        delta = 0.0
+        u_new = np.copy(u)
+        
+        for i in range(1, n-1):
+            for j in range(1, m-1):
+                if interior_mask[i-1,j-1]:
+                    new_val = 0.25 * (u[i, j-1] + u[i, j+1] + u[i-1,j] + u[i+1,j])
+                    diff = abs(u[i,j] - new_val)
+                    
+                    if diff > delta:
+                        delta = diff
+                    
+                    u_new[i, j] = new_val
+        u = u_new
+        if delta < atol: break
+    return u
 
 # STATS indicators: mean, standard deviation, under 18, under 15
 def summary_stats(u, interior_mask):
@@ -51,13 +73,23 @@ def summary_stats(u, interior_mask):
 
 # Function for parallelizing the code
     # Left-hand side indexes elimination: not need of 3-order tensors use due to different memory in each process
-def f_for_multiprocessing(bid): # FUNCTION FOR COMPUTING U IN EACH FLOORPLAN IN A DIFFERENT THREAD
-    u0, interior_mask = load_data(LOAD_DIR, bid)                           # For each floor: Matrix containing IC and Matrix containing the binary mask
-    u = jacobi(u0, interior_mask, MAX_ITER, ABS_TOL)                       # JACOBI ITERATOR LOOPS TILL THE SOLUTION CONVERGES
-    stat_keys = ['mean_temp', 'std_temp', 'pct_above_18', 'pct_below_15']
-    print('building_id, ' + ', '.join(stat_keys))  # CSV header
-    stats = summary_stats(u, interior_mask)                                # Analyisis function: mean, standard deviation, below 18, below 15
-    print(f"{bid},", ", ".join(str(stats[k]) for k in stat_keys))          # In that order, print the result for each building
+STAT_KEYS = ["mean_temp", "std_temp", "pct_above_18", "pct_below_15"]
+
+
+def f_for_multiprocessing(bid):  # Each floorplan in a worker process
+    u0, interior_mask = load_data(LOAD_DIR, bid)
+    u = jacobi_jit(u0, interior_mask, MAX_ITER, ABS_TOL)
+    stats = summary_stats(u, interior_mask)
+    # Live line (mean temperature easy to spot while workers finish)
+    print(
+        f"[task7] building_id={bid}  mean_temp={stats['mean_temp']:.6f}  "
+        f"std_temp={stats['std_temp']:.6f}  "
+        f"pct_above_18={stats['pct_above_18']:.4f}  "
+        f"pct_below_15={stats['pct_below_15']:.4f}",
+        flush=True,
+    )
+    # Same CSV row as before (one header printed once in __main__)
+    print(f"{bid}, " + ", ".join(str(stats[k]) for k in STAT_KEYS), flush=True)
 
 
 # -------------------- CODE -------------------------------
@@ -77,8 +109,9 @@ if __name__ == '__main__':
     MAX_ITER = 20_000
     ABS_TOL = 1e-4
 
-    # ----------------------------- HERE START THE CHANGES FOR MULTIPROCESSING ---------------------------
-
-with Pool(int(sys.argv[2])) as pool:
-    for _ in pool.imap(f_for_multiprocessing, building_ids):
-        pass
+    # ----------------------------- MULTIPROCESSING ---------------------------
+    workers = int(sys.argv[2]) if len(sys.argv) > 2 else 4
+    print("building_id, " + ", ".join(STAT_KEYS), flush=True)
+    with Pool(workers) as pool:
+        for _ in pool.imap(f_for_multiprocessing, building_ids):
+            pass

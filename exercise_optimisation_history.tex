@@ -1,0 +1,148 @@
+% Snippets describing how the GPU solver evolved from task 9 -> 10 and
+% from task 8 -> 11-8. Drop into the report with \input{...}. Requires
+% in preamble: \usepackage{booktabs}.
+
+\subsection{From task 9 to task 10: fusing the stencil}
+
+Task~9 ran a vectorised CuPy Jacobi smoother per building.
+The hot loop issued five separate CuPy operations every iteration --
+three adds and one multiply for the four-neighbour mean, plus one
+\verb|cp.where| to keep the boundary cells frozen -- and an implicit
+slice-copy when assigning the new interior back into \verb|u|.
+For \verb|MAX_ITER = 20_000| iterations of a $514 \times 514$ stencil
+that is ${\sim}6$ kernel launches per step, ${\sim}1.2 \times 10^{5}$
+in total per building.
+The \verb|nsys| trace showed \verb|cuLaunchKernel| as the dominant
+runtime cost (host-side launch overhead at ${\sim}2\,\mu\text{s}$
+each $\approx 5\,\text{s}$ of pure overhead per building),
+and end-to-end task~9 took ${\approx}58\,\text{s}$ for $N = 64$
+buildings (\verb|results/timings_all.csv|).
+
+Task~10 keeps the same algorithm but cuts the inner-loop launch count
+by three changes:
+
+\begin{itemize}
+  \item \textbf{Fused stencil with \texttt{@cp.fuse()}.}
+        The four-neighbour mean and the masked write collapse into a
+        single CUDA kernel
+        (\verb|_jacobi_step| in \verb|simulate_task10.py|).
+        Five op launches drop to one.
+  \item \textbf{Cheaper convergence test.}
+        Outside the mask
+        \verb|u_int_new == u_int|, so
+        $|\,u_{\text{int,new}} - u_{\text{int}}\,|$ is already zero
+        there; the extra \verb|cp.where| in the residual computation
+        becomes redundant and is removed.
+  \item \textbf{Less frequent host syncs.}
+        \verb|check_every| moves from 100 to 500. Each residual check
+        ends in \verb|float(delta)|, which forces a device-to-host
+        sync; doing five times fewer of them removes most of the
+        synchronisation stalls without hurting convergence.
+\end{itemize}
+
+\noindent
+After these changes only two kernels are launched per iteration
+(the fused stencil and the slice-assign back into \verb|u|), and
+task~10's runtime drops to ${\approx}6\,\text{s}$ for the same
+$N = 64$ (\verb|results/timings_all.csv|), an order-of-magnitude
+speed-up over task~9 with no change to the numerical result.
+
+
+\subsection{From task 8 to task 11-8: batching, custom kernel, float32}
+
+Task~8 already ran on the GPU using a hand-written
+\verb|numba.cuda| kernel with explicit ping-pong buffers
+(\verb|d_u|, \verb|d_u_new|) and convergence checks every 200 steps.
+Wall time was ${\approx}9\,\text{s}$ for $N = 64$
+(\verb|results/timings_all.csv|).
+The remaining cost was that every floorplan was a separate
+stream of work for the device: small grids, low arithmetic intensity
+per launch, and the host driving the iteration loop one building at
+a time.
+
+Task~11-8 reaches its final form through four cumulative changes,
+all documented in the docstrings of \verb|simulate_task11-8.py|.
+Each was driven by an \verb|nsys profile --stats=true| trace whose
+top-line numbers are summarised in Table~\ref{tab:ex12-opt-trace}.
+
+\paragraph{(1) Batching across buildings.}
+\verb|load_batch| stacks all buildings into a single
+\verb|(B, H, W)| tensor. One stencil launch updates every floorplan
+in the batch at once. CuPy's broadcasting handles the leading batch
+axis transparently, so the kernel definition stays the same as in
+the single-building solver. This raises useful work per launch by a
+factor $B$ and keeps the GPU's compute units busy.
+
+\paragraph{(2) Convergence-check bug fix.}
+The first batched implementation read
+\verb|u_int = us[:, 1:-1, 1:-1]| (a view), wrote the new interior
+back via \verb|us[:, 1:-1, 1:-1] = cp.where(...)|, and then
+computed \verb|delta = abs(u_int - u_new).max()|.
+Because \verb|u_int| was a view, the slice-assign mutated it in
+place, so the residual collapsed to zero on the first step and the
+loop exited far too early. Outputs differed from task~10 by an order
+of magnitude (building 10000: mean temperature $0.45$ vs.~$14.01$).
+The fix was to compute \verb|delta| from the pre-update values, i.e.
+before the slice-assign, mirroring the order task~10 already used.
+After the fix, the batched solver matches the per-building reference
+to within machine precision.
+
+\paragraph{(3) Custom \texttt{ElementwiseKernel} and ping-pong buffers.}
+Once the stencil itself was fused, \verb|nsys| showed two roughly
+equal-cost kernels per iteration: \verb|_jacobi_step_batched|
+(${\approx}50\,\%$ of GPU time, the actual stencil compute) and
+\verb|cupy_copy__float64_float64| (${\approx}49\,\%$, the implicit
+memcpy from \verb|us[:, 1:-1, 1:-1] = u_int_new|). The slice-assign
+exists because \verb|@cp.fuse| allocates a fresh output tensor that
+has to be copied back into \verb|us|.
+We replace the fused step with a custom
+\verb|cp.ElementwiseKernel| that takes an explicit \verb|out|
+argument and writes the result directly into the interior view of a
+second buffer. Two contiguous tensors \verb|a|, \verb|b| ping-pong
+between iterations; both carry the boundary conditions in their
+outer ring, copied once via \verb|b = a.copy()|, so the kernel only
+ever touches interior cells. The slice-copy is eliminated entirely.
+
+\paragraph{(4) \texttt{float32} state.}
+Room temperatures live in $[0, 25]\,^{\circ}\!\text{C}$ and the
+absolute tolerance is $10^{-4}$, both of which sit comfortably
+inside \verb|float32|'s ${\sim}7$ decimal digits of precision.
+Switching the state arrays to \verb|float32| (the kernel is generic
+in its type parameter \verb|T|) halves the HBM bytes moved per
+stencil step. Reductions in \verb|summary_stats_batched| are still
+performed in \verb|float64| so the aggregated CSV values match the
+reference solver to ${\sim}6$ decimals.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Effect of each optimisation on
+           \texttt{simulate\_task11-8.py}, measured end-to-end
+           (load + solve + stats) on $N = 64$ floorplans.}
+  \label{tab:ex12-opt-trace}
+  \begin{tabular}{lrr}
+    \toprule
+    Variant & Time (s) & Speed-up vs.\ task~9 \\
+    \midrule
+    Task 9 (CuPy, per building)                  & 58.0  & 1.0$\times$ \\
+    Task 8 (numba.cuda, ping-pong)               &  9.0  & 6.4$\times$ \\
+    Task 10 (\texttt{@cp.fuse}, per building)    &  6.0  & 9.7$\times$ \\
+    Task 11-8 fused step + slice-copy, fp64      &  6.16 & 9.4$\times$ \\
+    Task 11-8 + custom kernel (no slice-copy)    &  3.31 & 17.5$\times$ \\
+    Task 11-8 + \texttt{float32} state           &  1.79 & 32.4$\times$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\noindent
+The two final rows are the contribution of this session: removing
+the slice-copy almost halves the runtime, and the \verb|float32|
+switch takes another ${\sim}1.85{\times}$ on top.
+The \verb|nsys| trace of the final version shows
+\verb|cuLaunchKernel| at $56\,\text{ms}$ over $33\,000$ launches
+(down from $13.83\,\text{s}$ over $99\,000$ launches in the original
+unfused batched version), and \verb|cupy_copy__float64_float64| no
+longer appears in the inner-loop hot list at all. Compute and memory
+traffic are now the only remaining costs; further speed-ups would
+require either a red-black Gauss-Seidel scheme (roughly twice the
+per-iter convergence at the cost of more kernel complexity) or a
+shared-memory tiled stencil written as a \verb|cp.RawKernel|.

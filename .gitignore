@@ -1,3 +1,10 @@
 pyproject.toml
 uv.lock
 .python-version
+modified-swiss-dwellings/
+data/
+reports/
+results/
+modified-swiss-dwellings-v2/
+modified-swiss-dwellings.zip
+mds_V2_5.372k.csv

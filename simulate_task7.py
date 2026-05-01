@@ -2,6 +2,9 @@ from os.path import join
 from multiprocessing.pool import Pool
 import sys
 
+import multiprocessing as mp
+mp.set_start_method("fork")
+
 import numpy as np
 import matplotlib.pyplot # For saving the plots (task 3)
 
@@ -82,7 +85,7 @@ def f_for_multiprocessing(bid): # FUNCTION FOR COMPUTING U IN EACH FLOORPLAN IN 
 # -------------------- CODE -------------------------------
 
 if __name__ == '__main__':
-    LOAD_DIR = "/dtu/projects/02613_2025/data/modified_swiss_dwellings/"   # Load data from the course directory in the HPC
+    LOAD_DIR = "/home/easysort/DTU-HPC-Mini-project/data/"   # Load data from the course directory in the HPC
     with open(join(LOAD_DIR, 'building_ids.txt'), 'r') as f:
         building_ids = f.read().splitlines()
 

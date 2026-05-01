@@ -1,5 +1,17 @@
+"""Run task 10 (fused Jacobi) over many floorplans and save per-building stats.
+
+Writes ``results/task10_stats.csv`` (same columns as ``task11-8_stats.csv``).
+Regenerate histograms and aggregate numbers from that file without the GPU::
+
+    uv run python analyze_task11_8_stats.py \\
+        --csv results/task10_stats.csv \\
+        --figure results/task10_mean_temp_histograms.png \\
+        --title "Task 10"
+"""
 from os.path import join
+import csv
 import sys
+from pathlib import Path
 
 import numpy as np
 import cupy as cp
@@ -81,7 +93,21 @@ if __name__ == '__main__':
     ABS_TOL = 1e-4
     STAT_KEYS = ['mean_temp', 'std_temp', 'pct_above_18', 'pct_below_15']
 
-    print('building_id, ' + ', '.join(STAT_KEYS))
-    for bid in building_ids:
-        bid, stats = process_one(bid)
-        print(f"{bid}, " + ", ".join(str(stats[k]) for k in STAT_KEYS))
+    out_path = Path(__file__).resolve().parent / "results" / "task10_stats.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    n = len(building_ids)
+    with out_path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["building_id", *STAT_KEYS])
+        for i, bid in enumerate(building_ids, 1):
+            bid, stats = process_one(bid)
+            w.writerow([bid] + [stats[k] for k in STAT_KEYS])
+            if i % 500 == 0 or i == n:
+                print(f"  {i}/{n} buildings", flush=True)
+    print(f"saved {n} rows to {out_path}")
+    print(
+        "Regenerate histograms / summary from CSV (no GPU):\n"
+        "  uv run python analyze_task11_8_stats.py "
+        f"--csv {out_path.relative_to(Path(__file__).resolve().parent)} "
+        "--figure results/task10_mean_temp_histograms.png --title \"Task 10\""
+    )

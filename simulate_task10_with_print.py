@@ -58,6 +58,9 @@ def summary_stats(u, interior_mask):
     }
 
 
+STAT_KEYS = ["mean_temp", "std_temp", "pct_above_18", "pct_below_15"]
+
+
 def process_one(bid):
     u0, interior_mask = load_data(LOAD_DIR, bid)
     u = jacobi_gpu(u0, interior_mask, MAX_ITER, ABS_TOL)
@@ -79,9 +82,18 @@ if __name__ == '__main__':
 
     MAX_ITER = 20_000
     ABS_TOL = 1e-4
-    STAT_KEYS = ['mean_temp', 'std_temp', 'pct_above_18', 'pct_below_15']
 
-    print('building_id, ' + ', '.join(STAT_KEYS))
+    print("building_id, " + ", ".join(STAT_KEYS), flush=True)
     for bid in building_ids:
         bid, stats = process_one(bid)
-        print(f"{bid}, " + ", ".join(str(stats[k]) for k in STAT_KEYS))
+        print(
+            f"[task10] building_id={bid}  mean_temp={stats['mean_temp']:.6f}  "
+            f"std_temp={stats['std_temp']:.6f}  "
+            f"pct_above_18={stats['pct_above_18']:.4f}  "
+            f"pct_below_15={stats['pct_below_15']:.4f}",
+            flush=True,
+        )
+        print(
+            f"{bid}, " + ", ".join(str(stats[k]) for k in STAT_KEYS),
+            flush=True,
+        )
