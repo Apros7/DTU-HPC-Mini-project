@@ -23,7 +23,7 @@
 
 set -euo pipefail
 
-N=${N:-100}
+N=${N:-1000}
 DEST=${DEST:-/Users/lucasvilsen/Documents/DTU/mini_project_hpc/data}
 HPC_HOST=${HPC_HOST:-HPC}
 REMOTE=${REMOTE:-/dtu/projects/02613_2025/data/modified_swiss_dwellings/}
