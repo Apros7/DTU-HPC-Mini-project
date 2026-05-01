@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["numpy"]
+# ///
 """Parallel version of simulate.py using static scheduling.
 
 Each worker is assigned an equal-sized contiguous chunk of floorplans
@@ -7,7 +11,17 @@ hands every worker exactly one chunk, so the work distribution is
 fixed up front and does not depend on runtime per-task durations.
 
 Usage:
-    python simulate_parallel.py <N> <num_workers>
+    python simulate_parallel.py <N> <num_workers>          # HPC / conda env
+    uv run simulate_parallel.py <N> <num_workers>          # anywhere (local)
+
+Data location:
+    The floorplan files are read from $LOAD_DIR if set, otherwise from
+    the default DTU HPC path:
+        /dtu/projects/02613_2025/data/modified_swiss_dwellings/
+
+    To run locally, point LOAD_DIR at a directory containing the same
+    files (e.g. an rsync'd subset):
+        LOAD_DIR=./data uv run simulate_parallel.py 20 4
 
 Prints a single line to stderr with timing info:
     TIMING,N=...,workers=...,total_time=...,compute_time=...
@@ -15,16 +29,20 @@ Prints a single line to stderr with timing info:
 The CSV results are printed to stdout (same format as the reference).
 """
 
-from os.path import join
+import os
 import sys
 import time
 from math import ceil
 from multiprocessing import Pool
+from os.path import join
 
 import numpy as np
 
 
-LOAD_DIR = '/dtu/projects/02613_2025/data/modified_swiss_dwellings/'
+LOAD_DIR = os.environ.get(
+    'LOAD_DIR',
+    '/dtu/projects/02613_2025/data/modified_swiss_dwellings/',
+)
 MAX_ITER = 20_000
 ABS_TOL = 1e-4
 
