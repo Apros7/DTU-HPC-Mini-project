@@ -4,11 +4,13 @@
 # ///
 """Parallel version of simulate.py using static scheduling.
 
-Each worker is assigned an equal-sized contiguous chunk of floorplans
-(static scheduling) by using `multiprocessing.Pool.map` with
-`chunksize = ceil(N / num_workers)`. With this chunksize, the pool
-hands every worker exactly one chunk, so the work distribution is
-fixed up front and does not depend on runtime per-task durations.
+The work is statically partitioned into `num_workers` equal-size
+contiguous chunks of floorplans. Each chunk is dispatched to exactly
+one worker via `pool.apply_async` before any work starts, so the
+assignment is fixed (no work-stealing, no dynamic redistribution).
+A small `multiprocessing.Manager().Queue` carries one tick per
+completed floorplan back to the main process so we can drive a tqdm
+progress bar without affecting the scheduling.
 
 Usage:
     python simulate_parallel.py <N> <num_workers>          # HPC / conda env
@@ -33,7 +35,7 @@ import os
 import sys
 import time
 from math import ceil
-from multiprocessing import Pool
+from multiprocessing import Manager, Pool
 from os.path import join
 
 import numpy as np
@@ -79,11 +81,27 @@ def summary_stats(u, interior_mask):
 
 
 def process_one(bid):
-    """Worker function: load, simulate, summarize a single floorplan."""
+    """Process a single floorplan: load + simulate + summarize."""
     u0, interior_mask = load_data(LOAD_DIR, bid)
     u = jacobi(u0, interior_mask, MAX_ITER, ABS_TOL)
     stats = summary_stats(u, interior_mask)
     return bid, stats
+
+
+def process_chunk(args):
+    """Worker entry point: process a static chunk of floorplans.
+
+    `progress_q` is a multiprocessing Queue used to send a single
+    sentinel per completed floorplan so the main process can drive a
+    per-floorplan progress bar without breaking the static scheduling.
+    """
+    chunk, progress_q = args
+    out = []
+    for bid in chunk:
+        out.append(process_one(bid))
+        if progress_q is not None:
+            progress_q.put(1)
+    return out
 
 
 def main():
@@ -99,10 +117,15 @@ def main():
         building_ids = f.read().splitlines()
     building_ids = building_ids[:N]
 
-    # Static scheduling: give every worker a single, equal-size chunk.
-    # With Pool.map(chunksize=ceil(N/P)), tasks are partitioned ahead of
-    # time and each worker processes the same number of floorplans.
+    # Static scheduling: split building_ids into num_workers equal-size
+    # contiguous chunks up front. Each worker is dispatched exactly one
+    # chunk via apply_async, so the assignment is fixed before any
+    # work starts (no work-stealing, no dynamic redistribution).
     chunksize = max(1, ceil(N / num_workers))
+    chunks = [
+        building_ids[i:i + chunksize]
+        for i in range(0, N, chunksize)
+    ]
 
     # tqdm goes to stderr so it does not pollute the CSV on stdout.
     # We keep the bar enabled even when stderr is a pipe/file, but
@@ -111,21 +134,23 @@ def main():
     show_progress = os.environ.get("NO_PROGRESS", "") == ""
 
     t0 = time.perf_counter()
-    with Pool(processes=num_workers) as pool:
+    with Manager() as manager, Pool(processes=num_workers) as pool:
+        progress_q = manager.Queue() if show_progress else None
         t_pool_ready = time.perf_counter()
-        # imap with chunksize=ceil(N/P) keeps the static scheduling of
-        # map() but lets us update a progress bar as each result lands.
-        it = pool.imap(process_one, building_ids, chunksize=chunksize)
+        async_results = [
+            pool.apply_async(process_chunk, ((chunk, progress_q),))
+            for chunk in chunks
+        ]
+        # Drain per-floorplan progress ticks from the workers.
         if show_progress:
-            it = tqdm(
-                it,
-                total=N,
-                desc=f"P={num_workers}",
-                unit="fp",
-                mininterval=1.0,
-                file=sys.stderr,
-            )
-        results = list(it)
+            with tqdm(total=N, desc=f"P={num_workers}", unit="fp",
+                      mininterval=1.0, file=sys.stderr) as pbar:
+                done = 0
+                while done < N:
+                    progress_q.get()
+                    done += 1
+                    pbar.update(1)
+        results = [r for ar in async_results for r in ar.get()]
     t1 = time.perf_counter()
 
     total_time = t1 - t0
