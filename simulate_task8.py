@@ -5,7 +5,7 @@ import sys
 import numpy as np
 import matplotlib.pyplot # For saving the plots (task 3)
 
-from numba import njit
+from numba import njit, cuda
 
 # ------------------ DEFINING FUNCTIONS -----------------------
 
