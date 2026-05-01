@@ -96,7 +96,10 @@ for w in "${WORKERS_ARR[@]}"; do
     echo "[$(date +%H:%M:%S)] >>> workers=$w  (chunksize ~ $(( (N + w - 1) / w )))"
     OUT="out/run_w${w}.csv"
     ERR="out/run_w${w}.err"
-    uv run --quiet simulate_parallel.py "$N" "$w" > "$OUT" 2> "$ERR"
+    # tqdm progress bar goes to stderr; tee duplicates it to the
+    # terminal (>&2) AND to the per-run .err file we grep below.
+    uv run --quiet simulate_parallel.py "$N" "$w" > "$OUT" \
+        2> >(tee "$ERR" >&2)
 
     line=$(grep '^TIMING' "$ERR")
     total=$(echo "$line" | sed -n 's/.*total_time=\([0-9.]*\).*/\1/p')

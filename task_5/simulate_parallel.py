@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["numpy"]
+# dependencies = ["numpy", "tqdm"]
 # ///
 """Parallel version of simulate.py using static scheduling.
 
@@ -37,6 +37,7 @@ from multiprocessing import Pool
 from os.path import join
 
 import numpy as np
+from tqdm import tqdm
 
 
 LOAD_DIR = os.environ.get(
@@ -103,10 +104,28 @@ def main():
     # time and each worker processes the same number of floorplans.
     chunksize = max(1, ceil(N / num_workers))
 
+    # tqdm goes to stderr so it does not pollute the CSV on stdout.
+    # We keep the bar enabled even when stderr is a pipe/file, but
+    # throttle updates so log files stay readable. Set NO_PROGRESS=1
+    # to disable entirely.
+    show_progress = os.environ.get("NO_PROGRESS", "") == ""
+
     t0 = time.perf_counter()
     with Pool(processes=num_workers) as pool:
         t_pool_ready = time.perf_counter()
-        results = pool.map(process_one, building_ids, chunksize=chunksize)
+        # imap with chunksize=ceil(N/P) keeps the static scheduling of
+        # map() but lets us update a progress bar as each result lands.
+        it = pool.imap(process_one, building_ids, chunksize=chunksize)
+        if show_progress:
+            it = tqdm(
+                it,
+                total=N,
+                desc=f"P={num_workers}",
+                unit="fp",
+                mininterval=1.0,
+                file=sys.stderr,
+            )
+        results = list(it)
     t1 = time.perf_counter()
 
     total_time = t1 - t0
