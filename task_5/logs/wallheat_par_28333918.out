@@ -1,0 +1,92 @@
+Sender: LSF System <lsfadmin@hpc.dtu.dk>
+Subject: Job 28333918: <wallheat_par> in cluster <dcc> Exited
+
+Job <wallheat_par> was submitted from host <hpclogin1> by user <s224195> in cluster <dcc> at Fri May  1 12:02:53 2026
+Job was executed on host(s) <32*n-62-12-65>, in queue <hpc>, as user <s224195> in cluster <dcc> at Fri May  1 12:03:19 2026
+</zhome/75/a/187019> was used as the home directory.
+</zhome/75/a/187019/dev/DTU-HPC-Mini-project/task_5> was used as the working directory.
+Started at Fri May  1 12:03:19 2026
+Terminated at Fri May  1 12:03:20 2026
+Results reported at Fri May  1 12:03:20 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J wallheat_par
+#BSUB -q hpc
+#BSUB -W 1:00
+#BSUB -n 32
+#BSUB -R "span[hosts=1]"
+#BSUB -R "rusage[mem=2GB]"
+#BSUB -M 3GB
+#BSUB -o logs/wallheat_par_%J.out
+#BSUB -e logs/wallheat_par_%J.err
+
+# Static-scheduling parallel timing experiment.
+# Runs the parallel simulator for a fixed N (<= 100) with several
+# worker counts and records timings to results/timings.csv.
+
+set -euo pipefail
+
+N=${N:-100}
+WORKERS=(1 2 4 8 16 24 32)
+REPEATS=${REPEATS:-3}
+
+mkdir -p results logs out
+
+source /dtu/projects/02613_2025/conda/conda_init.sh
+conda activate 02613
+
+# Pin numpy/BLAS to a single thread per process so that worker count
+# is the only source of parallelism we measure.
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+
+CSV=results/timings.csv
+echo "workers,repeat,total_time,compute_time" > "$CSV"
+
+cd "$(dirname "$0")"
+
+for w in "${WORKERS[@]}"; do
+    for r in $(seq 1 "$REPEATS"); do
+        echo "=== workers=$w repeat=$r ==="
+        OUT="out/run_w${w}_r${r}.csv"
+        ERR="out/run_w${w}_r${r}.err"
+        python -u simulate_parallel.py "$N" "$w" > "$OUT" 2> "$ERR"
+        # Extract TIMING line: TIMING,N=...,workers=...,chunksize=...,total_time=...,compute_time=...
+        line=$(grep '^TIMING' "$ERR")
+        total=$(echo "$line" | sed -n 's/.*total_time=\([0-9.]*\).*/\1/p')
+        compute=$(echo "$line" | sed -n 's/.*compute_time=\([0-9.]*\).*/\1/p')
+        echo "${w},${r},${total},${compute}" >> "$CSV"
+    done
+
+(... more ...)
+------------------------------------------------------------
+
+Exited with exit code 1.
+
+Resource usage summary:
+
+    CPU time :                                   0.54 sec.
+    Max Memory :                                 -
+    Average Memory :                             -
+    Total Requested Memory :                     65536.00 MB
+    Delta Memory :                               -
+    Max Swap :                                   -
+    Max Processes :                              -
+    Max Threads :                                -
+    Run time :                                   1 sec.
+    Turnaround time :                            27 sec.
+
+The output (if any) follows:
+
+
+
+PS:
+
+Read file <logs/wallheat_par_28333918.err> for stderr output of this job.
+
